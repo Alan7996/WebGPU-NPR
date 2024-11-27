@@ -5,7 +5,7 @@ import { Stage } from "../stage/stage";
 export class Pathtracer extends renderer.Renderer {
     sceneUniformsBindGroupLayout: GPUBindGroupLayout;
     sceneUniformsBindGroup: GPUBindGroup;
-
+    SCAN_BLOCK_SIZE = 128;
     depthTexture: GPUTexture;
     depthTextureView: GPUTextureView;
 
@@ -40,6 +40,43 @@ export class Pathtracer extends renderer.Renderer {
     pipeline: GPURenderPipeline;
 
     numFramesAveraged: number;
+
+    // AHHH
+
+    // BUFFERS
+    activePathsBuffer: GPUBuffer;        // Marks which paths are active (1) or inactive (0)
+    compactedPathsBuffer: GPUBuffer;     // Final compacted indices 
+    prefixSumBuffer: GPUBuffer;          // Used during prefix sum computation
+    numActivePathsBuffer: GPUBuffer;     // Count of active paths
+    debugReadbackBuffers: GPUBuffer[];
+    debugBufferIndex: number = 0;
+
+    blockSumsBuffer: GPUBuffer;
+    carryBuffer: GPUBuffer;
+
+    // BIND GROUP LAYOUTS
+    // For stream compaction operations
+    streamCompactionBindGroupLayout: GPUBindGroupLayout;
+
+    // BIND GROUPS
+    // For stream compaction operations
+    streamCompactionBindGroup: GPUBindGroup;
+
+    // PIPELINES
+    // Initial marking of active paths
+    pathtracerComputePipelineMarkActive: GPUComputePipeline;
+
+    // Prefix sum computation
+    pathtracerComputePipelinePrefixSum: GPUComputePipeline;
+    pathtracerComputePipelinePrefixSumBlocks: GPUComputePipeline;
+    pathtracerComputePipelineAddBlockSums: GPUComputePipeline;
+
+    // Final compaction
+    pathtracerComputePipelineCompact: GPUComputePipeline;
+
+    
+
+    // end AHHH
 
     constructor(stage: Stage) {
         super(stage);
@@ -359,14 +396,230 @@ export class Pathtracer extends renderer.Renderer {
                 ],
             },
         });
+
+
+        // AHHHHH
+        // Add after the existing intersection buffer creation:
+
+        // Stream compaction buffers
+        this.activePathsBuffer = renderer.device.createBuffer({
+            label: "active paths buffer",
+            size: 4 * shaders.constants.maxResolutionWidth * shaders.constants.maxResolutionHeight,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        });
+
+        this.compactedPathsBuffer = renderer.device.createBuffer({
+            label: "compacted paths buffer",
+            size: 4 * shaders.constants.maxResolutionWidth * shaders.constants.maxResolutionHeight,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, 
+        });
+
+        this.prefixSumBuffer = renderer.device.createBuffer({
+            label: "prefix sum buffer",
+            size: 4 * shaders.constants.maxResolutionWidth * shaders.constants.maxResolutionHeight,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        });
+
+        this.numActivePathsBuffer = renderer.device.createBuffer({
+            label: "num active paths buffer",
+            size: 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        });
+
+        this.blockSumsBuffer = renderer.device.createBuffer({
+            label: "block sums buffer",
+            size: (128 * 4), // Using same constant as example
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+        });
+        
+        this.carryBuffer = renderer.device.createBuffer({
+            label: "carry buffer",
+            size: 8,  // Two u32s: carry.in and carry.out
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        
+        // Create bind group layouts
+        this.streamCompactionBindGroupLayout = renderer.device.createBindGroupLayout({
+            label: "stream compaction bind group layout",
+            entries: [
+                {
+                    // active paths
+                    binding: 0,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "storage" }
+                },
+                {
+                    // compacted paths 
+                    binding: 1,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "storage" }
+                },
+                {
+                    // prefix sum
+                    binding: 2,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "storage" }
+                },
+                {
+                    // block sums 
+                    binding: 3,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "storage" }
+                },
+                {
+                    // carry sums 
+                    binding: 4,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: "storage" }
+                }
+
+            ]
+        });
+
+        // Create the stream compaction bind group
+        this.streamCompactionBindGroup = renderer.device.createBindGroup({
+            label: "stream compaction bind group",
+            layout: this.streamCompactionBindGroupLayout,
+            entries: [
+                {
+                    binding: 0,
+                    resource: { buffer: this.activePathsBuffer }
+                },
+                {
+                    binding: 1,
+                    resource: { buffer: this.compactedPathsBuffer }
+                },
+                {
+                    binding: 2,
+                    resource: { buffer: this.prefixSumBuffer }
+                },
+                {
+                    binding: 3,
+                    resource: { buffer: this.blockSumsBuffer }
+                },
+                {
+                    binding: 4,
+                    resource: { buffer: this.carryBuffer }
+                }
+            ]
+        });
+
+        // Create compute pipeline for stream compaction
+        this.pathtracerComputePipelineCompact = renderer.device.createComputePipeline({
+            label: "pathtracer compute pipeline stream compaction",
+            layout: renderer.device.createPipelineLayout({
+                label: "pathtracer compute pipeline layout stream compaction",
+                bindGroupLayouts: [
+                    this.sceneUniformsBindGroupLayout,
+                    this.pathtracerComputeBindGroupLayout,
+                    this.streamCompactionBindGroupLayout
+                ]
+            }),
+            compute: {
+                module: renderer.device.createShaderModule({
+                    label: "pathtracer compute shader",
+                    code: shaders.pathtracerComputeSrc,
+                }),
+                entryPoint: "streamCompaction",
+            }
+        });
+
+
+        // Create pipeline for marking active paths
+        this.pathtracerComputePipelineMarkActive = renderer.device.createComputePipeline({
+            label: "pathtracer compute pipeline mark active",
+            layout: renderer.device.createPipelineLayout({
+                label: "pathtracer compute pipeline layout mark active",
+                bindGroupLayouts: [
+                    this.sceneUniformsBindGroupLayout,
+                    this.pathtracerComputeBindGroupLayout,
+                    this.streamCompactionBindGroupLayout
+                ]
+            }),
+            compute: {
+                module: renderer.device.createShaderModule({
+                    label: "pathtracer compute shader",
+                    code: shaders.pathtracerComputeSrc,
+                }),
+                entryPoint: "markActivePaths",
+            }
+        });
+
+        // Create pipeline for prefix sum computation
+        this.pathtracerComputePipelinePrefixSum = renderer.device.createComputePipeline({
+            label: "pathtracer compute pipeline prefix sum",
+            layout: renderer.device.createPipelineLayout({
+                label: "pathtracer compute pipeline layout prefix sum",
+                bindGroupLayouts: [ this.sceneUniformsBindGroupLayout, 
+                    this.pathtracerComputeBindGroupLayout,
+                    this.streamCompactionBindGroupLayout
+                ]
+            }),
+            compute: {
+                module: renderer.device.createShaderModule({
+                    label: "pathtracer compute shader prefix sum",
+                    code: shaders.pathtracerComputeSrc,
+                }),
+                entryPoint: "prefixSumFn",
+            }
+        });
+
+        this.pathtracerComputePipelinePrefixSumBlocks = renderer.device.createComputePipeline({
+            label: "pathtracer compute pipeline prefix sum blocks",
+            layout: renderer.device.createPipelineLayout({
+                label: "pathtracer compute pipeline layout prefix sum blocks",
+                bindGroupLayouts: [ this.sceneUniformsBindGroupLayout, 
+                    this.pathtracerComputeBindGroupLayout,
+                    this.streamCompactionBindGroupLayout
+                ]
+            }),
+            compute: {
+                module: renderer.device.createShaderModule({
+                    label: "pathtracer compute shader prefix sum blocks",
+                    code: shaders.pathtracerComputeSrc,
+                }),
+                entryPoint: "prefixSumBlocks"
+            }
+        });
+
+        this.pathtracerComputePipelineAddBlockSums = renderer.device.createComputePipeline({
+            label: "pathtracer compute pipeline add block sums",
+            layout: renderer.device.createPipelineLayout({
+                label: "pathtracer compute pipeline layout add block sums",
+                bindGroupLayouts: [ this.sceneUniformsBindGroupLayout, 
+                    this.pathtracerComputeBindGroupLayout,
+                    this.streamCompactionBindGroupLayout
+                ]  // Reuse same layout as first stage
+            }),
+            compute: {
+                module: renderer.device.createShaderModule({
+                    label: "pathtracer compute shader add block sums",
+                    code: shaders.pathtracerComputeSrc,
+                }),
+                entryPoint: "addBlockSums"
+            }
+        });
+
+        this.debugReadbackBuffers = [
+            renderer.device.createBuffer({
+                size: 256,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            }),
+            renderer.device.createBuffer({
+                size: 256,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            })
+        ];
+
+        // end AHHHH
     }
 
     override draw() {
         const encoder = renderer.device.createCommandEncoder();
         const canvasTextureView = renderer.context.getCurrentTexture().createView();
-
+    
         const computePass = encoder.beginComputePass();
-
+    
         if (this.camera.updated) {
             // Reset contents of render textures
             computePass.setPipeline(this.pathtracerComputePipelineClearTexture);
@@ -376,7 +629,7 @@ export class Pathtracer extends renderer.Renderer {
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
                 Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
             );
-
+    
             computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
             computePass.dispatchWorkgroups(
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
@@ -385,9 +638,9 @@ export class Pathtracer extends renderer.Renderer {
             this.numFramesAveraged = 0;
             this.camera.updated = false;
         }
-
+    
         this.camera.updateCameraUniformsNumFrames(this.numFramesAveraged);
-
+    
         // Generate camera rays
         this.camera.updateCameraUniformsCounter();
         computePass.setPipeline(this.pathtracerComputePipelineGenerateRay);
@@ -397,7 +650,7 @@ export class Pathtracer extends renderer.Renderer {
             Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
             Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
         );
-
+    
         for (let d = this.camera.rayDepth; d >= 0; d--) {
             // Compute ray-scene intersections
             this.camera.updateCameraUniformsCounter();
@@ -409,9 +662,7 @@ export class Pathtracer extends renderer.Renderer {
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
                 Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
             );
-
-            // Sort rays by materials
-
+    
             // Evaluate the integral and shade materials
             this.camera.updateCameraUniformsCounter();
             computePass.setPipeline(this.pathtracerComputePipelineIntegrate);
@@ -422,25 +673,104 @@ export class Pathtracer extends renderer.Renderer {
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
                 Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
             );
-
+    
             // Stream compaction
-        }
-
-        computePass.setPipeline(this.pathtracerComputePipelineFinalGather);
-        computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-        if (this.numFramesAveraged % 2 == 0) {
+            // 1. Mark active paths
+            computePass.setPipeline(this.pathtracerComputePipelineMarkActive);
+            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
             computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-        } else {
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
+            computePass.setBindGroup(2, this.streamCompactionBindGroup);
+            computePass.dispatchWorkgroups(
+                Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
+                Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
+            );
+
+            //2. First stage of prefix sum
+            computePass.setPipeline(this.pathtracerComputePipelinePrefixSum);
+            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+            computePass.setBindGroup(2, this.streamCompactionBindGroup);
+            computePass.dispatchWorkgroups(
+                Math.ceil(renderer.canvas.width * renderer.canvas.height / this.SCAN_BLOCK_SIZE), 
+                1, 
+                1
+            );
+
+            // 3. 
+            computePass.setPipeline(this.pathtracerComputePipelinePrefixSumBlocks);
+            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+            computePass.setBindGroup(2, this.streamCompactionBindGroup);
+            computePass.dispatchWorkgroups(1, 1, 1);  // Single dispatch since operating on block sums
+
+            // After prefixSumBlocks in your draw loop:
+            computePass.setPipeline(this.pathtracerComputePipelineAddBlockSums);
+            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+            computePass.setBindGroup(2, this.streamCompactionBindGroup);
+            computePass.dispatchWorkgroups(
+                Math.ceil(renderer.canvas.width * renderer.canvas.height / this.SCAN_BLOCK_SIZE), 
+                1, 
+                1
+            );
+
         }
-        computePass.dispatchWorkgroups(
+    
+        // End first compute pass before copy
+        computePass.end();
+    
+        // Do the buffer copy
+        encoder.copyBufferToBuffer(
+            this.activePathsBuffer,
+            0,  // src offset
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            0,  // dst offset
+            16  // size - copying 4 uint32s
+        );
+        encoder.copyBufferToBuffer(
+            this.prefixSumBuffer,
+            0,
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            16, // Offset by 16 bytes
+            16  // Next 4 values
+        );
+
+        // For debugging, add another buffer copy to see block sums results
+        encoder.copyBufferToBuffer(
+            this.blockSumsBuffer,
+            0,
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            32,  // Offset past the previous debug data
+            16
+        );
+
+
+        // Update debug readout to include final values
+        encoder.copyBufferToBuffer(
+            this.prefixSumBuffer,
+            0,
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            48, // Offset to new position after other debug data
+            16  // Next 4 values
+        );
+    
+        // Begin new compute pass for final gather
+        const finalGatherPass = encoder.beginComputePass();
+        finalGatherPass.setPipeline(this.pathtracerComputePipelineFinalGather);
+        finalGatherPass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+        if (this.numFramesAveraged % 2 == 0) {
+            finalGatherPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+        } else {
+            finalGatherPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
+        }
+        finalGatherPass.dispatchWorkgroups(
             Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
             Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
         );
-        computePass.end();
-
+        finalGatherPass.end();
+    
         this.numFramesAveraged += 1;
-
+    
         const renderPass = encoder.beginRenderPass({
             label: "pathtracer render pass",
             colorAttachments: [
@@ -458,7 +788,7 @@ export class Pathtracer extends renderer.Renderer {
                 depthStoreOp: "store",
             },
         });
-
+    
         renderPass.setPipeline(this.pipeline);
         renderPass.setVertexBuffer(0, this.emptyBuffer);
         if (this.numFramesAveraged % 2 == 1) {
@@ -468,7 +798,21 @@ export class Pathtracer extends renderer.Renderer {
         }
         renderPass.draw(6);
         renderPass.end();
-
+    
         renderer.device.queue.submit([encoder.finish()]);
+
+        if (this.numFramesAveraged % 30 === 0) {
+            const currentBuffer = this.debugReadbackBuffers[this.debugBufferIndex];
+            this.debugBufferIndex = (this.debugBufferIndex + 1) % 2;
+            currentBuffer.mapAsync(GPUMapMode.READ).then(() => {
+                const data = new Uint32Array(currentBuffer.getMappedRange());
+                console.log("Active flags (first 4):", Array.from(data.slice(0, 4)));
+                console.log("Prefix sum results (first 4):", Array.from(data.slice(4, 8)));
+                console.log("Block sums results (first 4):", Array.from(data.slice(8, 12)));
+                console.log("Final prefix sum (first 4):", Array.from(data.slice(12, 16)));
+                currentBuffer.unmap();
+            });
+        }
     }
 }
+

@@ -33,6 +33,7 @@ export const constants = {
     bindGroup_pathtracer: 1,
     bindGroup_geometry: 2,
     bindGroup_textures: 2,
+    bindGroup_stream_compaction: 2,
 
     moveLightsWorkgroupSize: 128,
     maxNumLightsPerCluster: 1000,
