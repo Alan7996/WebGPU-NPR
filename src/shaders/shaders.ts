@@ -46,6 +46,8 @@ export const constants = {
     workgroupSizeY: 4,
     workgroupSizeZ: 8,
 
+    scanBlockSize: 512,
+
     lightRadius: 10,
 
     maxResolutionWidth: 1920,

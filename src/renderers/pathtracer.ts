@@ -435,7 +435,7 @@ export class Pathtracer extends renderer.Renderer {
         this.carryBuffer = renderer.device.createBuffer({
             label: "carry buffer",
             size: 8,  // Two u32s: carry.in and carry.out
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
         });
         
         // Create bind group layouts
@@ -602,11 +602,11 @@ export class Pathtracer extends renderer.Renderer {
 
         this.debugReadbackBuffers = [
             renderer.device.createBuffer({
-                size: 256,
+                size: 2048,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
             }),
             renderer.device.createBuffer({
-                size: 256,
+                size: 2048,
                 usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
             })
         ];
@@ -753,6 +753,22 @@ export class Pathtracer extends renderer.Renderer {
             48, // Offset to new position after other debug data
             16  // Next 4 values
         );
+
+        encoder.copyBufferToBuffer(
+            this.carryBuffer,
+            0,
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            64,  // New offset
+            8    // Two u32s
+        );
+
+        encoder.copyBufferToBuffer(
+            this.activePathsBuffer,
+            128 * 4,  // Look at start of second block
+            this.debugReadbackBuffers[this.debugBufferIndex],
+            80,  // New offset
+            16   // Four elements from second block
+        );
     
         // Begin new compute pass for final gather
         const finalGatherPass = encoder.beginComputePass();
@@ -810,7 +826,11 @@ export class Pathtracer extends renderer.Renderer {
                 console.log("Prefix sum results (first 4):", Array.from(data.slice(4, 8)));
                 console.log("Block sums results (first 4):", Array.from(data.slice(8, 12)));
                 console.log("Final prefix sum (first 4):", Array.from(data.slice(12, 16)));
+                console.log("Carry buffer:", Array.from(data.slice(16, 18)));
+                console.log("Block index calculation:", Math.floor(4 / 128));
+                console.log("Second block active flags:", Array.from(data.slice(20, 24))); // New debug output
                 currentBuffer.unmap();
+
             });
         }
     }

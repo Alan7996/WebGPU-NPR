@@ -258,6 +258,7 @@ fn clearTexture(@builtin(global_invocation_id) globalIdx: vec3u) {
     }
 }
 
+@id(0) override SCAN_BLOCK_SIZE: u32 = 512;
 
 // Mark paths that should continue (have remaining bounces)
 @compute @workgroup_size(${workgroupSizeX}, ${workgroupSizeY})
@@ -279,9 +280,9 @@ fn markActivePaths(@builtin(global_invocation_id) globalIdx: vec3u) {
         }
     }
 }
-var<workgroup> chunk: array<u32, ${workgroupSizeX} * ${workgroupSizeY}>;
+var<workgroup> chunk: array<u32, SCAN_BLOCK_SIZE>;
 
-@compute @workgroup_size(${workgroupSizeX} / 2, ${workgroupSizeY})
+@compute @workgroup_size(SCAN_BLOCK_SIZE / 2)
 fn prefixSumFn(
     @builtin(global_invocation_id) globalId: vec3<u32>,
     @builtin(local_invocation_id) localId: vec3<u32>,
@@ -293,7 +294,7 @@ fn prefixSumFn(
 
     var offset = 1u;
     // Reduce step up tree
-    for (var d = u32(${workgroupSizeX} * ${workgroupSizeY}) >> 1; d > 0; d = d >> 1) {
+    for (var d = SCAN_BLOCK_SIZE >> 1; d > 0; d = d >> 1) {
         workgroupBarrier();
         if (localId.x < d) {
             let ai = offset * (2u * localId.x + 1u) - 1u;
@@ -305,12 +306,12 @@ fn prefixSumFn(
 
     // Store block sum and clear last element
     if (localId.x == 0u) {
-        blockSums[groupId.x] = chunk[${workgroupSizeX} * ${workgroupSizeY} - 1];
-        chunk[${workgroupSizeX} * ${workgroupSizeY} - 1] = 0u;
+        blockSums[groupId.x] = chunk[SCAN_BLOCK_SIZE - 1];
+        chunk[SCAN_BLOCK_SIZE - 1] = 0u;
     }
 
     // Down-sweep phase
-    for (var d = 1u; d < ${workgroupSizeX} * ${workgroupSizeY}; d = d << 1) {
+    for (var d = 1u; d < SCAN_BLOCK_SIZE; d = d << 1) {
         offset = offset >> 1;
         workgroupBarrier();
         if (localId.x < d) {
@@ -329,7 +330,7 @@ fn prefixSumFn(
 }
 
 // Process block sums with carry
-@compute @workgroup_size(${workgroupSizeX} / 2, ${workgroupSizeY})
+@compute @workgroup_size(SCAN_BLOCK_SIZE / 2)
 fn prefixSumBlocks(
     @builtin(global_invocation_id) globalId: vec3<u32>,
     @builtin(local_invocation_id) localId: vec3<u32>,
@@ -341,7 +342,7 @@ fn prefixSumBlocks(
 
     var offset = 1u;
     // Up-sweep phase
-    for (var d = u32(${workgroupSizeX} * ${workgroupSizeY}) >> 1; d > 0; d = d >> 1) {
+    for (var d = SCAN_BLOCK_SIZE >> 1; d > 0; d = d >> 1) {
         workgroupBarrier();
         if (localId.x < d) {
             let ai = offset * (2u * localId.x + 1u) - 1u;
@@ -353,12 +354,12 @@ fn prefixSumBlocks(
 
     // Update carry
     if (localId.x == 0u) {
-        carry[1] = chunk[${workgroupSizeX} * ${workgroupSizeY} - 1] + carry[0];
-        chunk[${workgroupSizeX} * ${workgroupSizeY} - 1] = 0u;
+        carry[1] = chunk[SCAN_BLOCK_SIZE - 1] + carry[0];
+        chunk[SCAN_BLOCK_SIZE - 1] = 0u;
     }
 
     // Down-sweep phase
-    for (var d = 1u; d < ${workgroupSizeX} * ${workgroupSizeY}; d = d << 1) {
+    for (var d = 1u; d < SCAN_BLOCK_SIZE; d = d << 1) {
         offset = offset >> 1;
         workgroupBarrier();
         if (localId.x < d) {
@@ -376,7 +377,7 @@ fn prefixSumBlocks(
     blockSums[2 * globalId.x + 1] = chunk[2 * localId.x + 1] + carry[0];
 }
 
-@compute @workgroup_size(${workgroupSizeX} / 2, ${workgroupSizeY})
+@compute @workgroup_size(SCAN_BLOCK_SIZE / 2)
 fn addBlockSums(
     @builtin(global_invocation_id) globalId: vec3<u32>,
     @builtin(workgroup_id) groupId: vec3<u32>
@@ -385,11 +386,23 @@ fn addBlockSums(
     let index = globalId.x + (globalId.y * u32(cameraUniforms.resolution[0]));
     
     // Calculate which block this index belongs to
-    let blockIndex = index / 128;
+    let blockIndex = index / SCAN_BLOCK_SIZE;
+    // Get this block's sum from the previous scan
+    let blockSum = blockSums[blockIndex];
     
-    // Get the previous block's sum
-    let prevBlockSum = select(0u, blockSums[blockIndex], blockIndex > 0u);
-    
-    // Add it to our prefix sum
-    prefixSum[index] += prevBlockSum;
+    // Add block sum of all previous blocks to this element's prefix sum
+    if (index < u32(cameraUniforms.resolution[0]) * u32(cameraUniforms.resolution[1])) {
+        prefixSum[index] = prefixSum[index] + blockSum;
+    }
+}
+
+
+@compute @workgroup_size(${workgroupSizeX}, ${workgroupSizeY})
+fn streamCompaction(@builtin(global_invocation_id) globalId: vec3u) {
+    let idx = globalId.x;
+    if (idx < streamCompactionParams.totalElements) {
+        if (activePaths[idx] != 0u) {
+            compactedPaths[prefixSum[idx]] = idx;
+        }
+    }
 }
