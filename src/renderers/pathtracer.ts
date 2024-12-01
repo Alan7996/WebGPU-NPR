@@ -614,189 +614,110 @@ export class Pathtracer extends renderer.Renderer {
         // end AHHHH
     }
 
-    override draw() {
-        const encoder = renderer.device.createCommandEncoder();
+    override async draw() {
+        let encoder = renderer.device.createCommandEncoder();
         const canvasTextureView = renderer.context.getCurrentTexture().createView();
     
-        const computePass = encoder.beginComputePass();
-    
+        // Reset if camera moved
         if (this.camera.updated) {
-            // Reset contents of render textures
-            computePass.setPipeline(this.pathtracerComputePipelineClearTexture);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-            computePass.dispatchWorkgroups(
+            let resetPass = encoder.beginComputePass();
+            resetPass.setPipeline(this.pathtracerComputePipelineClearTexture);
+            resetPass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+            resetPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+            resetPass.dispatchWorkgroups(
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
                 Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
             );
-    
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
-            computePass.dispatchWorkgroups(
+            resetPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
+            resetPass.dispatchWorkgroups(
                 Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
                 Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
             );
+            resetPass.end();
             this.numFramesAveraged = 0;
             this.camera.updated = false;
         }
     
         this.camera.updateCameraUniformsNumFrames(this.numFramesAveraged);
+        
+        // Begin main compute pass
+        let computePass = encoder.beginComputePass();
+        const totalPaths = renderer.canvas.width * renderer.canvas.height;
+        const workgroupsX = Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX);
+        const workgroupsY = Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY);
     
-        // Generate camera rays
+        // Generate initial rays
         this.camera.updateCameraUniformsCounter();
         computePass.setPipeline(this.pathtracerComputePipelineGenerateRay);
         computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
         computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-        computePass.dispatchWorkgroups(
-            Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
-            Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
-        );
+        computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
     
-        for (let d = this.camera.rayDepth; d >= 0; d--) {
-            // Compute ray-scene intersections
+        // Initialize carry buffer
+        renderer.device.queue.writeBuffer(this.carryBuffer, 0, new Uint32Array([0, 0]));
+    
+        // For each bounce/depth level
+        for (let depth = this.camera.rayDepth; depth >= 0; depth--) {
+            // 1. Compute intersections for all paths
             this.camera.updateCameraUniformsCounter();
             computePass.setPipeline(this.pathtracerComputePipelineComputeIntersections);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
             computePass.setBindGroup(shaders.constants.bindGroup_geometry, this.pathtracerGeometryBindGroup);
-            computePass.dispatchWorkgroups(
-                Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
-                Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
-            );
+            computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
     
-            // Evaluate the integral and shade materials
+            // 2. Integrate/scatter for all paths
             this.camera.updateCameraUniformsCounter();
             computePass.setPipeline(this.pathtracerComputePipelineIntegrate);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
             computePass.setBindGroup(shaders.constants.bindGroup_textures, this.pathtracerTextureBindGroup);
-            computePass.dispatchWorkgroups(
-                Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
-                Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
-            );
+            computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
     
-            // Stream compaction
-            // 1. Mark active paths
-            computePass.setPipeline(this.pathtracerComputePipelineMarkActive);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-            computePass.setBindGroup(2, this.streamCompactionBindGroup);
-            computePass.dispatchWorkgroups(
-                Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
-                Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
-            );
-
-            //2. First stage of prefix sum
-            computePass.setPipeline(this.pathtracerComputePipelinePrefixSum);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-            computePass.setBindGroup(2, this.streamCompactionBindGroup);
-            computePass.dispatchWorkgroups(
-                Math.ceil(renderer.canvas.width * renderer.canvas.height / this.SCAN_BLOCK_SIZE), 
-                1, 
-                1
-            );
-
-            // 3. 
-            computePass.setPipeline(this.pathtracerComputePipelinePrefixSumBlocks);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-            computePass.setBindGroup(2, this.streamCompactionBindGroup);
-            computePass.dispatchWorkgroups(1, 1, 1);  // Single dispatch since operating on block sums
-
-            // After prefixSumBlocks in your draw loop:
-            computePass.setPipeline(this.pathtracerComputePipelineAddBlockSums);
-            computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-            computePass.setBindGroup(2, this.streamCompactionBindGroup);
-            computePass.dispatchWorkgroups(
-                Math.ceil(renderer.canvas.width * renderer.canvas.height / this.SCAN_BLOCK_SIZE), 
-                1, 
-                1
-            );
-
+            if (depth > 0) { // Only compact if we have more bounces to do
+                // 3. Mark active paths
+                computePass.setPipeline(this.pathtracerComputePipelineMarkActive);
+                computePass.setBindGroup(2, this.streamCompactionBindGroup);
+                computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
+    
+                // 4. Prefix sum operations
+                const totalElements = totalPaths;
+                const numBlocks = Math.ceil(totalElements / this.SCAN_BLOCK_SIZE);
+                
+                // 4a. First scan within blocks
+                computePass.setPipeline(this.pathtracerComputePipelinePrefixSum);
+                computePass.dispatchWorkgroups(numBlocks, 1, 1);
+    
+                // 4b. Scan block sums
+                computePass.setPipeline(this.pathtracerComputePipelinePrefixSumBlocks);
+                computePass.dispatchWorkgroups(1, 1, 1);
+    
+                // 4c. Add block sums back
+                computePass.setPipeline(this.pathtracerComputePipelineAddBlockSums);
+                computePass.dispatchWorkgroups(numBlocks, 1, 1);
+    
+                // 5. Compact the paths
+                computePass.setPipeline(this.pathtracerComputePipelineCompact);
+                computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
+            }
         }
     
-        // End first compute pass before copy
+        // Final gather
+        computePass.setPipeline(this.pathtracerComputePipelineFinalGather);
+        computePass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
+        if (this.numFramesAveraged % 2 == 0) {
+            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
+        } else {
+            computePass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
+        }
+        computePass.dispatchWorkgroups(workgroupsX, workgroupsY);
         computePass.end();
     
-        // Do the buffer copy
-        encoder.copyBufferToBuffer(
-            this.activePathsBuffer,
-            0,  // src offset
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            0,  // dst offset
-            16  // size - copying 4 uint32s
-        );
-        encoder.copyBufferToBuffer(
-            this.prefixSumBuffer,
-            0,
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            16, // Offset by 16 bytes
-            16  // Next 4 values
-        );
-
-        // For debugging, add another buffer copy to see block sums results
-        encoder.copyBufferToBuffer(
-            this.blockSumsBuffer,
-            0,
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            32,  // Offset past the previous debug data
-            16
-        );
-
-
-        // Update debug readout to include final values
-        encoder.copyBufferToBuffer(
-            this.prefixSumBuffer,
-            0,
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            48, // Offset to new position after other debug data
-            16  // Next 4 values
-        );
-
-        encoder.copyBufferToBuffer(
-            this.carryBuffer,
-            0,
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            64,  // New offset
-            8    // Two u32s
-        );
-
-        encoder.copyBufferToBuffer(
-            this.activePathsBuffer,
-            128 * 4,  // Look at start of second block
-            this.debugReadbackBuffers[this.debugBufferIndex],
-            80,  // New offset
-            16   // Four elements from second block
-        );
-    
-        // Begin new compute pass for final gather
-        const finalGatherPass = encoder.beginComputePass();
-        finalGatherPass.setPipeline(this.pathtracerComputePipelineFinalGather);
-        finalGatherPass.setBindGroup(shaders.constants.bindGroup_scene, this.sceneUniformsBindGroup);
-        if (this.numFramesAveraged % 2 == 0) {
-            finalGatherPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp1);
-        } else {
-            finalGatherPass.setBindGroup(shaders.constants.bindGroup_pathtracer, this.pathtracerComputeBindGroupTemp2);
-        }
-        finalGatherPass.dispatchWorkgroups(
-            Math.ceil(renderer.canvas.width / shaders.constants.workgroupSizeX),
-            Math.ceil(renderer.canvas.height / shaders.constants.workgroupSizeY)
-        );
-        finalGatherPass.end();
-    
-        this.numFramesAveraged += 1;
-    
+        // Final render pass
         const renderPass = encoder.beginRenderPass({
             label: "pathtracer render pass",
-            colorAttachments: [
-                {
-                    view: canvasTextureView,
-                    clearValue: [0, 0, 0, 0],
-                    loadOp: "clear",
-                    storeOp: "store",
-                },
-            ],
+            colorAttachments: [{
+                view: canvasTextureView,
+                clearValue: [0, 0, 0, 0],
+                loadOp: "clear",
+                storeOp: "store",
+            }],
             depthStencilAttachment: {
                 view: this.depthTextureView,
                 depthClearValue: 1.0,
@@ -807,7 +728,7 @@ export class Pathtracer extends renderer.Renderer {
     
         renderPass.setPipeline(this.pipeline);
         renderPass.setVertexBuffer(0, this.emptyBuffer);
-        if (this.numFramesAveraged % 2 == 1) {
+        if (this.numFramesAveraged % 2 === 1) {
             renderPass.setBindGroup(0, this.renderTextureBindGroupTemp1);
         } else {
             renderPass.setBindGroup(0, this.renderTextureBindGroupTemp2);
@@ -816,23 +737,7 @@ export class Pathtracer extends renderer.Renderer {
         renderPass.end();
     
         renderer.device.queue.submit([encoder.finish()]);
-
-        if (this.numFramesAveraged % 30 === 0) {
-            const currentBuffer = this.debugReadbackBuffers[this.debugBufferIndex];
-            this.debugBufferIndex = (this.debugBufferIndex + 1) % 2;
-            currentBuffer.mapAsync(GPUMapMode.READ).then(() => {
-                const data = new Uint32Array(currentBuffer.getMappedRange());
-                console.log("Active flags (first 4):", Array.from(data.slice(0, 4)));
-                console.log("Prefix sum results (first 4):", Array.from(data.slice(4, 8)));
-                console.log("Block sums results (first 4):", Array.from(data.slice(8, 12)));
-                console.log("Final prefix sum (first 4):", Array.from(data.slice(12, 16)));
-                console.log("Carry buffer:", Array.from(data.slice(16, 18)));
-                console.log("Block index calculation:", Math.floor(4 / 128));
-                console.log("Second block active flags:", Array.from(data.slice(20, 24))); // New debug output
-                currentBuffer.unmap();
-
-            });
-        }
+        this.numFramesAveraged += 1;
     }
 }
 

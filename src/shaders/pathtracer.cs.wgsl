@@ -267,9 +267,9 @@ fn markActivePaths(@builtin(global_invocation_id) globalIdx: vec3u) {
         let index = globalIdx.x + (globalIdx.y * u32(cameraUniforms.resolution[0]));
         let pathSegment = &pathSegments.segments[index];
         if (index % 2 == 0) {
-            pathSegment.remainingBounces = i32(1);
+            //pathSegment.remainingBounces = i32(1);
         } else {
-            pathSegment.remainingBounces = i32(-1);
+            //pathSegment.remainingBounces = i32(-1);
         }
 
         // Just mark paths as active/inactive based on remaining bounces
@@ -399,10 +399,24 @@ fn addBlockSums(
 
 @compute @workgroup_size(${workgroupSizeX}, ${workgroupSizeY})
 fn streamCompaction(@builtin(global_invocation_id) globalId: vec3u) {
-    let idx = globalId.x;
-    if (idx < streamCompactionParams.totalElements) {
-        if (activePaths[idx] != 0u) {
-            compactedPaths[prefixSum[idx]] = idx;
+    if (globalId.x < u32(cameraUniforms.resolution[0]) && globalId.y < u32(cameraUniforms.resolution[1])) {
+        let index = globalId.x + (globalId.y * u32(cameraUniforms.resolution[0]));
+        
+        // Check if this path is active
+        if (activePaths[index] == 1u) {
+            // Get destination index from prefix sum
+            let destIndex = prefixSum[index];
+            
+            // Copy path data to compacted position
+            let srcSegment = pathSegments.segments[index];
+            pathSegments.segments[destIndex] = srcSegment;
+            
+            // Copy intersection data
+            let srcIntersection = intersections.intersections[index];
+            intersections.intersections[destIndex] = srcIntersection;
+            
+            // Mark the new position as active
+            compactedPaths[destIndex] = 1u;
         }
     }
 }
