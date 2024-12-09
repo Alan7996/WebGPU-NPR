@@ -104,7 +104,7 @@ Notice when we bump up the number of divisions, we can see more fine details. Th
 
 Additionally, we added an effect similar to wind in the scene to demonstrate the movement of the cloth:
 
-|![Cloth Wind](img/cloth-wind-vid.mp4)|
+|![Cloth Wind](img/cloth-wind.gif)|
 |:--:|
 |Example of Cloth Simulation with Wind|
 
