@@ -355,7 +355,16 @@ export class Pathtracer extends renderer.Renderer {
         const encoder = renderer.device.createCommandEncoder();
         const canvasTextureView = renderer.context.getCurrentTexture().createView();
 
-        const computePass = encoder.beginComputePass();
+        const computePass = encoder.beginComputePass({
+            label: "path trace compute pass",
+            ...(renderer.canTimestamp && {
+                timestampWrites: {
+                    querySet: this.querySet,
+                    beginningOfPassWriteIndex: 0,
+                    endOfPassWriteIndex: 1,
+                },
+            }),
+        });
 
         if (this.camera.updated) {
             // Reset contents of render textures
@@ -429,6 +438,13 @@ export class Pathtracer extends renderer.Renderer {
         );
         computePass.end();
 
+        if (renderer.canTimestamp) {
+            encoder.resolveQuerySet(this.querySet, 0, this.querySet.count, this.resolveBuffer, 0);
+            if (this.resultBuffer.mapState === 'unmapped') {
+                encoder.copyBufferToBuffer(this.resolveBuffer, 0, this.resultBuffer, 0, this.resultBuffer.size);
+            }
+        }
+
         this.numFramesAveraged += 1;
 
         const renderPass = encoder.beginRenderPass({
@@ -447,6 +463,13 @@ export class Pathtracer extends renderer.Renderer {
                 depthLoadOp: "clear",
                 depthStoreOp: "store",
             },
+            ...(renderer.canTimestamp && {
+                timestampWrites: {
+                    querySet: this.querySet,
+                    beginningOfPassWriteIndex: 2,
+                    endOfPassWriteIndex: 3,
+                },
+            }),
         });
 
         renderPass.setPipeline(this.pipeline);
@@ -460,5 +483,38 @@ export class Pathtracer extends renderer.Renderer {
         renderPass.end();
 
         renderer.device.queue.submit([encoder.finish()]);
+
+        if (renderer.canTimestamp && this.resultBuffer.mapState === 'unmapped') {
+            this.resultBuffer.mapAsync(GPUMapMode.READ).then(() => {
+                const times = new BigInt64Array(this.resultBuffer.getMappedRange());
+                this.gpuTime = (Number(times[3] - times[2] + times[1] - times[0])) * 0.000001;
+                if (this.gpuTimesIndex < this.gpuTimesSize && 
+                    this.gpuTimes[this.gpuTimesIndex] != this.gpuTime &&
+                    this.gpuTime > 0) {
+                    // Total time
+                    this.gpuTimes[this.gpuTimesIndex] = this.gpuTime;
+                    if (this.logSeparateTimes)
+                    {
+                        // Separate times
+                        this.gpuTimesCompute[this.gpuTimesIndex] = Number(times[1] - times[0]) * 0.000001;
+                        this.gpuTimesRender[this.gpuTimesIndex] = Number(times[3] - times[2]) * 0.000001;
+                    }
+                    this.gpuTimesIndex++;
+                } 
+                this.resultBuffer.unmap();
+            });
+        }
+
+        if (this.gpuTimesIndex == this.gpuTimesSize) {
+            // console.log("Overall time");
+            // console.log(this.gpuTimes);
+            if (this.logSeparateTimes) {
+                console.log("Compute shader stage");
+                console.log(this.gpuTimesCompute);
+                // console.log("Render texture stage");
+                // console.log(this.gpuTimesRender);
+            }
+            this.gpuTimesIndex++;
+        }
     }
 }
