@@ -137,15 +137,14 @@ export abstract class Renderer {
 
     protected gpuTime: number = 0;
     protected gpuTimes: Array<number>;
-    protected gpuTimesPre: Array<number>;
-    protected gpuTimesPost: Array<number>;
     protected gpuTimesCompute: Array<number>;
+    protected gpuTimesRender: Array<number>;
     protected gpuTimesIndex: number = 0;
     protected gpuTimesSize: number = 100;
 
     // IMPORTANT: Edit these flags to log times on browser console
     private logTime = false;
-    protected logSeparateTimes = false;
+    protected logSeparateTimes = true;
 
     constructor(stage: Stage) {
         this.scene = stage.scene;
@@ -156,10 +155,10 @@ export abstract class Renderer {
 
         this.querySet = device.createQuerySet({
             type: "timestamp",
-            count: 6,
+            count: 4,
         });
         this.resolveBuffer = device.createBuffer({
-            size: this.querySet.count * 12,
+            size: this.querySet.count * 8,
             usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
         });
         this.resultBuffer = device.createBuffer({
@@ -168,9 +167,8 @@ export abstract class Renderer {
         });
 
         this.gpuTimes = new Array<number>(this.gpuTimesSize);
-        this.gpuTimesPre = new Array<number>(this.gpuTimesSize);
-        this.gpuTimesPost = new Array<number>(this.gpuTimesSize);
         this.gpuTimesCompute = new Array<number>(this.gpuTimesSize);
+        this.gpuTimesRender = new Array<number>(this.gpuTimesSize);
 
         canTimestamp = canTimestamp && this.logTime;
     }

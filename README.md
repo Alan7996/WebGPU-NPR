@@ -108,7 +108,49 @@ Additionally, we added an effect similar to wind in the scene to demonstrate the
 |:--:|
 |Example of Cloth Simulation with Wind|
 
-## Analysis
+## NPR Analysis
+
+* Tested on: **Microsoft Edge Version 131.0.2903.86 (Official build) (64 bit)** on
+  Windows 10, AMD Ryzen 5 5600X 6-Core Processor @ 3.70GHz, 32GB RAM, NVIDIA GeForce RTX 3070 Ti (Personal Computer)
+* Rendered image size : 1656 x 962 pixels
+* Workgroup size : (4, 4, 8)
+* Ray depth : 8
+
+The raw data for both qualitative and quantitative observations were made using above testing setup. For the numerical measurements of the performance, please refer to `rawdata.xlsx` at the root of this repository. The render time for each frame was measured in the renderer's `draw` function by taking the difference between recorded timestamps before and after submitting the command encoder to our device queue.
+
+|![Skull Scene](img/performance_skull_screenshot.JPG)|![Halo Spartan Scene](img/performance_halo_screenshot.JPG)|
+|:--:|:--:|
+|Skull Scene|Halo Spartan Scene|
+
+The performance analysis was conducted using the skull conference scene and the halo spartan scene. Each scene was rendered as 1) without stylization, 2) with only grayscale stylization, and 3) with all stylizations. We tested each configuration by recording render times for **one hundred** frames and averaging the results to reduce the performance effect of any sort of randomness.
+
+|![Performance Graph](img/performance_total_skull.png)|
+|:--:|
+|Total Shader Runtime for Skull Scene over 100 Frames|
+
+|![Performance Graph](img/performance_total_halo.png)|
+|:--:|
+|Total Shader Runtime for Halo Spartan Scene over 100 Frames|
+
+|![Performance Graph](img/performance_shader_skull.png)|
+|:--:|
+|Averaged Shader Runtime Breakdown for Skull Scene|
+
+|![Performance Graph](img/performance_shader_halo.png)|
+|:--:|
+|Averaged Shader Runtime Breakdown for Halo Spartan Scene|
+
+A very interesting observation emerges from aboves graphs where the renders WITH NPR STYLIZATION ran faster than renders without NPR stylization! The final render passes using accumulated image as the render texture reported all identical runtimes, so this factor will no longer be mentioned as we move on. For the compute passes, the skull scene experienced on average **3.33%** performance increase as we turned on stylization, and the halo spartan scene experienced on average **6.08%** performance increase. This result is very counter intuitive, as we are performing additional operations but we are gaining speed.
+
+To investigate this problem further, we also present a breakdown of each component of the compute shader passes per frame. Since our ray depth is 8, we broke down each ray depth iteration's intersection and material shading into two different passes.
+
+|![Performance Graph](img/performance_compute_breakdown_halo.png)|
+|:--:|
+|Averaged Compute Shader Runtime Breakdown for Halo Spartan Scene|
+
+What we observe above is the fact that ray generation, final gather, and, most importantly, all "shader" kernels had extremely short runtime compared to each intersection test kernels. On average, each shader kernel lasted only **2.61%** of the intersection kernel's runtime. This means that any additional shading operations we perform to stylize objects in the scene only adds onto fractional contributions to this already miniscule runtime.
+
+So this explains why the runtime doesn't increase much compared to renders without stylization, but what explains the decrease in runtime? When rendering a scene without NPR stylization, it turns out to be the case that there is a runtime difference between using the pathtracer mode that doesn't compile stylization shader code together and the NPR pathtracer mode with `shouldStylize` returning always false. The latter reports almost identical times as renders with NPR stylization on, whereas the first reports a significantly slower speed shown in graphs above. Unfortunately we were not able to identify the exact root cause of such difference, so this still remains a future work to be figured out.
 
 ## Credits
 
