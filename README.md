@@ -17,9 +17,9 @@ You can directly experience the live demo at our website on [GitHub page](https:
 
 ### Live Demo
 
-Click on the image below to test our project on your own browser!
+Click on the GIF below to test our project on your own browser!
 
-[![](img/screenshot.JPG)](https://alan7996.github.io/WebGPU-NPR/)
+[![](img/demo.gif)](https://alan7996.github.io/WebGPU-NPR/)
 
 ## Contents
 
