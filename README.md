@@ -24,9 +24,9 @@ Click on the image below to test our project on your own browser!
 ## Contents
 
 - `src/` contains all the TypeScript and WGSL code for this project. This contains several subdirectories:
-  - `renderers/` defines the different renderers that can be selected. Currently only NPR pathtracer is supported
+  - `renderers/` defines the different renderers that can be selected. Currently only non-NPR and NPR pathtracers are supported
   - `shaders/` contains the WGSL files that are interpreted as shader programs at runtime, as well as a `shaders.ts` file which preprocesses the shaders
-  - `stage/` includes camera controls, scene loading, and lights, where you will implement the clustering compute shader
+  - `stage/` includes camera controls, scene loading, and cloth loading
 - `scenes/` contains all models that can be used in the test scene
 
 ## Running the code
@@ -88,6 +88,26 @@ Below is an example render where the left and right mirrors only apply grayscale
 
 ### Cloth Simulation
 
+The cloth simulation runs every set number of pathtracer frames. For example, say every 20 frames, the cloth physics is simulated for a short period of time, and then the pathtracer is resumed to view the new output of the simulation.
+
+Here is an initial image of the cloth simulation with 50 subdivisions along each axis:
+
+|![Cloth 50 divisions](img/cloth.png)|
+|:--:|
+|Example of Cloth Simulation with 50 Subdivisions|
+
+Notice when we bump up the number of divisions, we can see more fine details. The image below has 500 subdivisions along each axis:
+
+|![Cloth 500 divisions](img/cloth-subdivisions.png)|
+|:--:|
+|Example of Cloth Simulation with 500 Subdivisions|
+
+Additionally, we added an effect similar to wind in the scene to demonstrate the movement of the cloth:
+
+|![Cloth Wind](img/cloth-wind-vid.mp4)|
+|:--:|
+|Example of Cloth Simulation with Wind|
+
 ## Analysis
 
 ## Credits
@@ -102,4 +122,9 @@ Below is an example render where the left and right mirrors only apply grayscale
 - [stats.js](https://github.com/mrdoob/stats.js)
 - [wgpu-matrix](https://github.com/greggman/wgpu-matrix)
 - [wgpu-basecode](https://github.com/CIS5650-Fall-2024/Project4-WebGPU-Forward-Plus-and-Clustered-Deferred)
+
 - [Halo Spartan Model](https://skfb.ly/6QVvM)
+- [Suzanne](https://github.com/KhronosGroup/glTF-Sample-Models/tree/main/2.0/Suzanne)
+- [Person](https://poly.pizza/m/qbDLeTtb8K)
+- [Skull](https://sketchfab.com/3d-models/skull-downloadable-1a9db900738d44298b0bc59f68123393)
+- [Small Airplane](https://poly.pizza/m/7cvx6ex-xfL)
